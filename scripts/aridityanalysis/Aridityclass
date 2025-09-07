@@ -1,0 +1,23 @@
+#Assign an aridity class to each station 
+
+import pandas as pd
+import rasterio
+
+stations = pd.read_csv("/path/to/your/metric/CSV/file")
+
+#Load in aridity index data tif file from CGIAR-CSI database
+ai_path = "/path/to/your/aridity/data"
+with rasterio.open(ai_path) as src:
+    points = list(zip(stations['longitude'], stations['latitude']))
+    
+    ai_values = list(src.sample(points)) 
+    ai_values = [val[0] / 10000 if val[0] != src.nodata else np.nan for val in ai_values]
+
+stations['aridity_index'] = ai_values
+
+stations['aridity_class'] = stations['aridity_index'].apply(classify_aridity)
+
+output = stations[['latitude', 'longitude', 'aridity_index']]
+
+#For each metric, save to a csv file lat, lon, and aridity index
+output.to_csv("/path/to/your/output/metric/aridity/file", index=False)
