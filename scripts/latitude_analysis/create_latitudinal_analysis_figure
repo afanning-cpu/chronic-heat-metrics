@@ -1,0 +1,132 @@
+import matplotlib.pyplot as plt
+import pandas as pd
+import xarray as xr
+import numpy as np
+
+#load CHIRTS heatwave data
+chirts_file = '/path/to/your/CHIRTS/data'
+ds = xr.open_dataset(chirts_file)
+chirts = ds['heat_waves_per_time_period'][0, :, :]
+lat = ds['lat'].values
+zonal_avg = chirts.mean(dim='lon').values
+latitude_bins = np.arange(-90, 91, 1)
+
+#Load files
+datasets = [
+    {
+        "title": "Acute vs. Chronic Heat Hazard: Dry-Bulb Temperature",
+        "first10_path": "/path/to/your/days/above/threshold/first10years/T/CSV",
+        "last10_path": "/path/to/your/days/above/threshold/last10years/T/CSV",
+        "all_days_path": "/path/to/your/days/above/threshold/T/CSV",
+        "ylabel_right": "Average Days >90°F / # Heatwave Events",
+        "days_label": "Average Days with Maximum\nDry-Bulb Temp >90°F (1993–2023)"
+    },
+    {
+        "title": "Acute vs. Chronic Heat Hazard: Heat Index",
+        "first10_path": "/path/to/your/days/above/threshold/first10years/HI/CSV",
+        "last10_path": "/path/to/your/days/above/threshold/last10years/HI/CSV",
+        "all_days_path": "/path/to/your/days/above/threshold/HI/CSV",
+        "ylabel_right": "Average Days >90°F / # Heatwave Events",
+        "days_label": "Average Days with Maximum\nHeat Index >90°F (1993–2023)"
+    },
+    {
+        "title": "Acute vs. Chronic Heat Hazard: Wet-Bulb Temperature",
+        "first10_path": "/path/to/your/days/above/threshold/first10years/WBT/CSV",
+        "last10_path": "/path/to/your/days/above/threshold/last10years/WBT/CSV",
+        "all_days_path": "/path/to/your/days/above/threshold/WBT/CSV",
+        "ylabel_right": "Average Days >75°F / # Heatwave Events",
+        "days_label": "Average Days with Maximum\nWet-Bulb Temp >75°F (1993–2023)"
+    }
+]
+
+all_station_counts = []
+all_days_values = []
+
+for data in datasets:
+    all_days_data = pd.read_csv(data["all_days_path"])
+    all_latitudes = all_days_data['latitude'].values
+    all_days_above_90 = all_days_data['avg_days_per_year'].values
+
+    for lat_bin in latitude_bins:
+        in_bin = (all_latitudes >= lat_bin) & (all_latitudes < lat_bin + 1)
+        if np.any(in_bin):
+            all_days_values.append(np.mean(all_days_above_90[in_bin]))
+
+    first10_data = pd.read_csv(data["first10_path"])
+    last10_data = pd.read_csv(data["last10_path"])
+    merged_data = pd.merge(first10_data, last10_data, on=['latitude', 'longitude'], suffixes=('_first10', '_last10'))
+
+    days_first10 = merged_data['avg_days_per_year_first10'].values
+    days_last10 = merged_data['avg_days_per_year_last10'].values
+    lat_stations = merged_data['latitude'].values
+    chronic_condition = (days_first10 < 90) & (days_last10 >= 90) #Filter stations becoming chronic
+    lat_chronic = lat_stations[chronic_condition]
+    station_counts = [sum((lat_chronic >= lat_bin) & (lat_chronic < lat_bin + 1)) for lat_bin in latitude_bins]
+    all_station_counts.extend(station_counts)
+
+station_ymin, station_ymax = 0, max(all_station_counts) + 2
+days_ymin = 0
+days_ymax = max(max(all_days_values), float(zonal_avg.max())) + 5
+
+#Plotting
+fig, axs = plt.subplots(nrows=3, figsize=(12, 14), sharex=False)
+
+subplot_labels = ['(a)', '(b)', '(c)']
+
+for i, data in enumerate(datasets):
+    ax = axs[i]
+    ax2 = ax.twinx()
+
+    all_days_data = pd.read_csv(data["all_days_path"])
+    all_latitudes = all_days_data['latitude'].values
+    all_days_above_90 = all_days_data['avg_days_per_year'].values
+
+    avg_days_per_lat = []
+    for lat_bin in latitude_bins:
+        in_bin = (all_latitudes >= lat_bin) & (all_latitudes < lat_bin + 1)
+        avg_days = np.mean(all_days_above_90[in_bin]) if np.any(in_bin) else np.nan
+        avg_days_per_lat.append(avg_days)
+
+    first10_data = pd.read_csv(data["first10_path"])
+    last10_data = pd.read_csv(data["last10_path"])
+    merged_data = pd.merge(first10_data, last10_data, on=['latitude', 'longitude'], suffixes=('_first10', '_last10'))
+
+    lat_stations = merged_data['latitude'].values
+    days_first10 = merged_data['avg_days_per_year_first10'].values
+    days_last10 = merged_data['avg_days_per_year_last10'].values
+    chronic_condition = (days_first10 < 90) & (days_last10 >= 90)
+    lat_chronic = lat_stations[chronic_condition]
+    station_counts = [sum((lat_chronic >= lat_bin) & (lat_chronic < lat_bin + 1)) for lat_bin in latitude_bins]
+
+    ax.fill_between(latitude_bins, station_counts, color='blue', alpha=0.6, label='Stations Becoming Chronic (2013–2023)')
+    ax2.fill_between(lat, zonal_avg, color='firebrick', alpha=0.4, label='CHIRTS Heatwaves (1983–2016)')
+    ax2.fill_between(latitude_bins, avg_days_per_lat, color='darkgreen', alpha=0.5, label=data["days_label"])
+    ax2.axhline(90, color='green', linestyle='--', linewidth=1, label='90-Day Threshold')
+
+    ax.set_ylim(station_ymin, station_ymax)
+    ax2.set_ylim(days_ymin, days_ymax)
+
+    ax.set_ylabel('Number of Stations', fontsize=15)
+    ax2.set_ylabel(data["ylabel_right"], fontsize=12, labelpad=12)
+    ax.set_title(data["title"], fontsize=18, pad=15)
+
+    lines1, labels1 = ax.get_legend_handles_labels()
+    lines2, labels2 = ax2.get_legend_handles_labels()
+    ax2.legend(lines1 + lines2, labels1 + labels2, fontsize=12, loc='upper left')
+
+    ax.grid(True, linestyle='--', alpha=0.6)
+    ax.set_xlabel('Latitude', fontsize=13, labelpad=12) 
+    
+label_positions = [
+    (0.01, axs[0].get_position().y1 + 0.08),
+    (0.01, axs[1].get_position().y1 + 0.035),
+    (0.01, axs[2].get_position().y1 - 0.01) 
+]
+    
+for i, (x, y) in enumerate(label_positions):
+    fig.text(x, y, subplot_labels[i], fontsize=16, fontweight='bold', va='bottom', ha='left')
+
+#Layout and save
+plt.tight_layout(rect=[0, 0, 1, 0.97], h_pad=3.0)
+plt.savefig('/path/to/your/output/figure/file', dpi=300, bbox_inches='tight')
+plt.show()
