@@ -1,0 +1,181 @@
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import cartopy.crs as ccrs
+import cartopy.feature as cfeature
+import cartopy.io.shapereader as shpreader
+from shapely.geometry import Point
+from shapely.prepared import prep
+from shapely.ops import unary_union
+import matplotlib.gridspec as gridspec
+
+#Define aridity classifications
+aridity_bins = [0, 0.05, 0.20, 0.50, 0.65, np.inf]
+aridity_labels = ['Hyper-arid', 'Arid', 'Semi-arid', 'Dry sub-humid', 'Humid']
+aridity_colors = {
+    'Hyper-arid': '#d73027',
+    'Arid': '#fc8d59',
+    'Semi-arid': '#fee08b',
+    'Dry sub-humid': '#d9ef8b',
+    'Humid': '#1a9850'
+}
+
+land_shp = shpreader.natural_earth(resolution='110m', category='physical', name='land')
+land_geoms = list(shpreader.Reader(land_shp).geometries())
+land_union_geom = unary_union(land_geoms)
+land_union = prep(land_union_geom)
+
+#Use land based stations only
+def is_on_land(lon, lat):
+    return land_union.contains(Point(lon, lat))
+
+def filter_land_stations(df): 
+    mask = df.apply(lambda row: is_on_land(row['longitude'], row['latitude']), axis=1)
+    return df[mask].copy()
+
+#Load station data
+file_info = {
+    "Dry-Bulb Temperature": {
+        "aridity_path": "/path/to/your/metric/aridity/file",
+        "all_days_path": "/path/to/your/days/above/threshold/CSV/file",
+        "first10_path": "/path/to/your/days/above/threshold/first10years/CSV/file",
+        "last10_path": "/path/to/your/days/above/threshold/last10years/CSV/file",
+    },
+    "Heat Index": {
+        "aridity_path": "/path/to/your/metric/aridity/file",
+        "all_days_path": "/path/to/your/days/above/threshold/CSV/file",
+        "first10_path": "/path/to/your/days/above/threshold/first10years/CSV/file",
+        "last10_path": "/path/to/your/days/above/threshold/last10years/CSV/file",
+    },
+    "Wet-Bulb Temperature": {
+        "aridity_path": "/path/to/your/metric/aridity/file",
+        "all_days_path": "/path/to/your/days/above/threshold/CSV/file",
+        "first10_path": "/path/to/your/days/above/threshold/first10years/CSV/file",
+        "last10_path": "/path/to/your/days/above/threshold/last10years/CSV/file",
+    }
+}
+
+#Create figure and panels
+fig = plt.figure(figsize=(13, 17))
+gs = gridspec.GridSpec(nrows=4, ncols=1, height_ratios=[1.5, 1, 1, 1])
+
+#Global aridity map
+ax_map = fig.add_subplot(gs[0], projection=ccrs.PlateCarree())
+ax_map.add_feature(cfeature.COASTLINE)
+ax_map.add_feature(cfeature.BORDERS, linestyle=':')
+ax_map.add_feature(cfeature.LAND, facecolor='lightgray', edgecolor='none')
+ax_map.set_extent([-180, 180, -60, 70])
+gl = ax_map.gridlines(draw_labels=True, linewidth=0.5, color='gray', alpha=0.5)
+gl.top_labels = False
+gl.right_labels = False
+ax_map.text(-0.1, 1.05, '(a)', transform=ax_map.transAxes,
+            fontsize=14, fontweight='bold', va='top', ha='right')
+
+#load one aridity data file to store aridity information
+aridity_df = pd.read_csv("/path/to/your/metric/aridity/file")
+aridity_df['aridity_class'] = pd.cut(aridity_df['aridity_index'], bins=aridity_bins,
+                                     labels=aridity_labels, include_lowest=True)
+aridity_df['on_land'] = aridity_df.apply(lambda row: is_on_land(row['longitude'], row['latitude']), axis=1)
+land_stations = aridity_df[aridity_df['on_land']]
+
+for aridity_class, color in aridity_colors.items():
+    subset = land_stations[land_stations['aridity_class'] == aridity_class]
+    ax_map.scatter(subset['longitude'], subset['latitude'],
+                   color=color, label=aridity_class,
+                   s=20, alpha=0.8, transform=ccrs.PlateCarree())
+
+ax_map.set_title('Global Aridity Zones: Station Data', fontsize=15, pad=15)
+ax_map.legend(title="Aridity Zones", loc='lower left', fontsize=11)
+
+#Lower panels
+subplot_labels = ['(b)', '(c)', '(d)']
+summary_rows = []
+
+for i, (var_name, paths) in enumerate(file_info.items()):
+    ax = fig.add_subplot(gs[i+1])
+
+    aridity = pd.read_csv(paths["aridity_path"])
+    aridity = filter_land_stations(aridity)
+    aridity['aridity_class'] = pd.cut(aridity['aridity_index'], bins=aridity_bins, labels=aridity_labels, include_lowest=True)
+    total_counts = aridity['aridity_class'].value_counts().reindex(aridity_labels).fillna(0)
+
+    all_days = pd.read_csv(paths["all_days_path"])
+    all_days = filter_land_stations(all_days)
+    all_days = pd.merge(all_days, aridity[['latitude', 'longitude', 'aridity_class']],
+                        on=['latitude', 'longitude'], how='left')
+
+    already_chronic = all_days[all_days['avg_days_per_year'] >= 90]
+    already_counts = already_chronic['aridity_class'].value_counts().reindex(aridity_labels).fillna(0)
+
+    first10 = pd.read_csv(paths["first10_path"])
+    first10 = filter_land_stations(first10)
+
+    last10 = pd.read_csv(paths["last10_path"])
+    last10 = filter_land_stations(last10)
+
+    merged = pd.merge(first10, last10, on=['latitude', 'longitude'], suffixes=('_first10', '_last10'))
+    merged = pd.merge(merged, aridity[['latitude', 'longitude', 'aridity_class']],
+                      on=['latitude', 'longitude'], how='left')
+
+    becoming_chronic = (merged['avg_days_per_year_first10'] < 90) & (merged['avg_days_per_year_last10'] >= 90)
+    becoming_counts = merged[becoming_chronic]['aridity_class'].value_counts().reindex(aridity_labels).fillna(0)
+
+    percent_already = (already_counts / total_counts.replace(0, np.nan)) * 100
+    percent_becoming = (becoming_counts / total_counts.replace(0, np.nan)) * 100
+
+    x = np.arange(len(aridity_labels))
+    width = 0.35
+
+    ax2 = ax.twinx()
+    bars_already = ax.bar(x - width/2, percent_already, width=width, color='red', alpha=0.7, label='Chronic (1993–2023)')
+    bars_becoming = ax2.bar(x + width/2, percent_becoming, width=width, color='blue', alpha=0.7, label='Becoming Chronic in 2013–2023')
+
+    for bar in bars_already:
+        height = bar.get_height()
+        if not np.isnan(height):
+            ax.text(bar.get_x() + bar.get_width()/2, height + 1, f'{height:.1f}%', ha='center', va='bottom', fontsize=10, color='red')
+    for bar in bars_becoming:
+        height = bar.get_height()
+        if not np.isnan(height):
+            ax2.text(bar.get_x() + bar.get_width()/2, height + 0.5, f'{height:.1f}%', ha='center', va='bottom', fontsize=10, color='blue')
+
+    ax.set_ylim(0, 50)
+    ax2.set_ylim(0, 10)
+    ax.set_ylabel('Percent of Total Stations Chronic (%)')
+    ax2.set_ylabel('Percent of Total Stations Becoming Chronic (%)')
+    ax.set_xticks(x)
+    labels_with_n = [f'{label}\n(n={int(n)})' for label, n in zip(aridity_labels, total_counts)]
+    ax.set_xticklabels(labels_with_n, fontsize=12)
+    ax.set_title(f'Percent Chronic Heat Exposure by Aridity Class: {var_name}', fontsize=15)
+    ax.grid(True, linestyle='--', alpha=0.6)
+    ax.text(-0.1, 1.05, subplot_labels[i], transform=ax.transAxes, fontsize=14, fontweight='bold', va='top', ha='right')
+
+ 
+    handles = [bars_already[0], bars_becoming[0]]
+    ax.legend(handles, ['Chronic (1993–2023)', 'Becoming Chronic in 2013–2023'], loc='upper right', fontsize=10)
+
+    for zone in aridity_labels:
+        total = total_counts[zone]
+        already = already_counts[zone]
+        becoming = becoming_counts[zone]
+        percent_a = (already / total * 100) if total > 0 else np.nan
+        percent_b = (becoming / total * 100) if total > 0 else np.nan
+
+        summary_rows.append({
+            "Metric": var_name,
+            "Aridity Zone": zone,
+            "Total Stations": int(total),
+            "Chronic Stations (1993–2023)": int(already),
+            "Becoming Chronic (2013–2023)": int(becoming),
+            "Percent Chronic": round(percent_a, 1) if not np.isnan(percent_a) else "",
+            "Percent Becoming Chronic": round(percent_b, 1) if not np.isnan(percent_b) else ""
+        })
+
+plt.tight_layout(rect=[0, 0, 1, 0.98], h_pad=3)
+plt.savefig('/path/to/your/output/figure/file', dpi=300, bbox_inches='tight')
+plt.show()
+
+#(Optional)Save summary CSV
+#summary_df = pd.DataFrame(summary_rows)
+#summary_df.to_csv("/path/to/your/output/aridity/summary/file", index=False)
+#print("Summary CSV saved")
