@@ -1,0 +1,116 @@
+#Counts the number of days per year above 90 degrees F HI threshold
+import os
+import numpy as np
+import netCDF4 as nc
+from datetime import datetime, timedelta
+import pandas as pd 
+
+THRESHOLD_C = 32.22 #90 degrees Fahrenheit threshold in Celsius 
+START_DATE = datetime(1993, 1, 1) #Start of the 30 year period
+END_DATE = datetime(2023, 1, 1) #End of the 30 year period
+FILL_VALUES = -1e+30, -2e+30, -99.0  #Fill values for missing data
+DATA_COMPLETENESS_THRESHOLD = 0.9 #Ensure at least 90% of data is available
+
+source_dir = '/path/to/your/HadISD/files' #Directory with all of the station files 
+
+def hours_to_datetime(hours, base_date):
+    return base_date + np.array([timedelta(hours=h) for h in hours])
+
+def calculate_relative_humidity(temperature, dew_point): #Calculate relative humidity
+    return 100 * (np.exp((17.625 * dew_point) / (243.04 + dew_point)) / np.exp((17.625 * temperature) / (243.04 + temperature)))
+
+def calculate_heat_index(temp_c, rh): #Calculate heat index using the NWS formula
+    temp_f = temp_c * 9/5 + 32 #Convert to Fahrenheit
+    hi_f = np.where(temp_f < 80, temp_c,
+                    -42.379 + 2.04901523 * temp_f + 10.14333127 * rh - 0.22475541 * temp_f * rh -
+                    6.83783e-3 * temp_f**2 - 5.481717e-2 * rh**2 + 1.22874e-3 * temp_f**2 * rh +
+                    8.5282e-4 * temp_f * rh**2 - 1.99e-6 * temp_f**2 * rh**2)
+    
+    #Adjust for extreme heat conditions
+    cond1 = (rh < 13) & (80 <= temp_f) & (temp_f <= 112)
+    cond2 = (rh > 85) & (80 <= temp_f) & (temp_f <= 87)
+    
+    hi_f = np.where(cond1, hi_f - ((13 - rh) / 4) * np.sqrt((17 - np.abs(temp_f - 95)) / 17), hi_f)
+    hi_f = np.where(cond2, hi_f + ((rh - 85) / 10) * ((87 - temp_f) / 5), hi_f)
+    
+    return (hi_f - 32) * 5/9  #Convert back to Celsius
+
+def process_file(nc_file):
+    try:
+        with nc.Dataset(nc_file, 'r') as dataset:
+            time_var = dataset.variables['time'][:]
+            base_date = datetime(1931, 1, 1)
+            time_values = hours_to_datetime(time_var, base_date)
+
+            mask = (START_DATE <= time_values) & (time_values < END_DATE) #Only use data from 1993 to 2023
+            if not np.any(mask):
+                return None
+
+            time_values = time_values[mask]
+            dew_point_values = dataset.variables['dewpoints'][:][mask] #Gather dewpoint values
+            temp_values = dataset.variables['temperatures'][:][mask] #Gather temperature values 
+            
+            lon = dataset.variables['longitude'][:][0]
+            lat = dataset.variables['latitude'][:][0]
+
+            #Replace fill values with NaN
+            for FILL_VALUE in FILL_VALUES:
+                dew_point_values = np.where(dew_point_values == FILL_VALUE, np.nan, dew_point_values)
+                temp_values = np.where(temp_values == FILL_VALUE, np.nan, temp_values)
+                
+            
+            relative_humidity = calculate_relative_humidity(temp_values, dew_point_values) #Calculate RH
+            heat_index_values = calculate_heat_index(temp_values, relative_humidity) #Calculate HI
+
+        
+            df = pd.DataFrame({'time': time_values, 'heat_index': heat_index_values})
+            df = df.dropna()
+            if df.empty:
+                return None 
+            
+            last_valid_date = df['time'].max()
+            if (END_DATE - last_valid_date).days > 7:
+                return None
+            
+            daily_max_heat_index = df.set_index('time').resample('D').max()
+            
+            expected_days = (END_DATE - START_DATE).days
+            valid_days = daily_max_heat_index['heat_index'].count()
+            completeness = valid_days / expected_days
+
+            if completeness < DATA_COMPLETENESS_THRESHOLD:
+                return None
+
+            #Calculate average days per year above the threshold
+            days_above_threshold = (daily_max_heat_index['heat_index'] > THRESHOLD_C).sum()
+            num_years = (END_DATE - START_DATE).days / 365.25
+            avg_days_per_year = days_above_threshold / num_years
+
+            return avg_days_per_year, lon, lat
+    except Exception as e:
+        print(f"Error processing {nc_file}: {e}")
+        return None
+
+stations = []
+values = []
+
+#Loop through all of the files 
+for root, dirs, files in os.walk(source_dir):
+    for filename in files:
+        if filename.endswith('.nc'):
+            file_path = os.path.join(root, filename)
+            result = process_file(file_path)
+            if result:
+                avg_days, lon, lat = result
+                if avg_days >= 0:
+                    stations.append((lon, lat))
+                    values.append(avg_days)
+
+#Create a DataFrame
+df = pd.DataFrame(stations, columns=['longitude', 'latitude'])
+df['avg_days_per_year'] = values
+
+#Save the lat, lon, and days above 90 to an output file
+output_file = '/path/to/your/output/heatindex/file'
+df.to_csv(output_file, index=False)
+print(f"Data saved to {output_file}")
