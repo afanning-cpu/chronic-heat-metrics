@@ -1,0 +1,73 @@
+#Counts the number of days per year above 90 degrees F Dry-Bulb Temp Threshold
+import os
+import numpy as np
+import netCDF4 as nc
+from datetime import datetime, timedelta
+import pandas as pd 
+
+THRESHOLD_C = 32.22 #90 degrees Fahrenheit threshold in Celsius 
+START_DATE = datetime(1993, 1, 1) #Start of the 30 year period
+END_DATE = datetime(2023, 1, 1) #End of the 30 year period
+FILL_VALUES = -1e+30, -2e+30, -99.0  #Fill values for missing data
+
+source_dir = '/path/to/your/HadISD/files' #Directory with all of the station files 
+
+def hours_to_datetime(hours, base_date):
+    return base_date + np.array([timedelta(hours=h) for h in hours])
+
+def process_file(nc_file):
+    try:
+        with nc.Dataset(nc_file, 'r') as dataset:
+            time_var = dataset.variables['time'][:]
+            base_date = datetime(1931, 1, 1)
+            time_values = hours_to_datetime(time_var, base_date)
+
+            mask = (START_DATE <= time_values) & (time_values < END_DATE) #Only use data from 1993 to 2023
+            if not np.any(mask):
+                return None
+
+            time_values = time_values[mask]
+            temp_values = dataset.variables['temperatures'][:][mask] #Gather temperature values 
+            
+            lon = dataset.variables['longitude'][:][0]
+            lat = dataset.variables['latitude'][:][0]
+
+            #Replace fill values with NaN
+            temp_values = np.where(np.isin(temp_values, FILL_VALUES), np.nan, temp_values)
+            
+            df = pd.DataFrame({'time': time_values, 'temp': temp_values})
+            daily_max_temperature = df.set_index('time').resample('D').max() #Reorganizes the data into individual days and takes the maximum for each day
+
+            #Calculate average days per year above the threshold
+            days_above_threshold = (daily_max_temperature['temp'] > THRESHOLD_C).sum()
+            num_years = (END_DATE - START_DATE).days / 365.25
+            avg_days_per_year = days_above_threshold / num_years
+
+            return avg_days_per_year, lon, lat
+    except Exception as e:
+        print(f"Error processing {nc_file}: {e}")
+        return None
+
+stations = []
+values = []
+
+#Loop through all of the files 
+for root, dirs, files in os.walk(source_dir):
+    for filename in files:
+        if filename.endswith('.nc'):
+            file_path = os.path.join(root, filename)
+            result = process_file(file_path)
+            if result:
+                avg_days, lon, lat = result
+                if avg_days >= 0: 
+                    stations.append((lon, lat))
+                    values.append(avg_days)
+
+#Create a DataFrame
+df = pd.DataFrame(stations, columns=['longitude', 'latitude'])
+df['avg_days_per_year'] = values
+
+#Save the lat, lon, and days above 90 to an output file
+output_file = '/path/to/your/output/drybulbtemperature/file'
+df.to_csv(output_file, index=False)
+print(f"Data saved to {output_file}")
