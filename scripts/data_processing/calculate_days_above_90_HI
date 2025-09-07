@@ -68,9 +68,6 @@ def process_file(nc_file):
             if df.empty:
                 return None 
             
-            last_valid_date = df['time'].max()
-            if (END_DATE - last_valid_date).days > 7:
-                return None
             
             daily_max_heat_index = df.set_index('time').resample('D').max()
             
