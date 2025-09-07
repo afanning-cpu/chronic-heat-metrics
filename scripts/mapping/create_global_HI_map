@@ -1,0 +1,182 @@
+#Create global map of chronic heat index and stations transitioning to chronic heat
+import matplotlib.pyplot as plt
+import cartopy.crs as ccrs
+import cartopy.feature as cfeature
+import pandas as pd
+from matplotlib.colors import LinearSegmentedColormap, Normalize
+import matplotlib.gridspec as gridspec
+
+#Load station data
+station_data = pd.read_csv('/path/to/your/days/above/threshold/HI/CSV')
+
+#Filter out chronic stations (greater than or equal to 90 days per year)
+station_data_filtered = station_data[station_data['avg_days_per_year'] >= 90]
+lon_stations = station_data_filtered['longitude'].values
+lat_stations = station_data_filtered['latitude'].values
+days_above_wb = station_data_filtered['avg_days_per_year'].values
+
+#Filter U.S., Mexico, and Caribbean region
+us_lon_min, us_lon_max = -128, -60
+us_lat_min, us_lat_max = 13, 52
+mask_us = (lon_stations >= us_lon_min) & (lon_stations <= us_lon_max) & (lat_stations >= us_lat_min) & (lat_stations <= us_lat_max)
+lon_stations_us = lon_stations[mask_us]
+lat_stations_us = lat_stations[mask_us]
+days_above_wb_us = days_above_wb[mask_us]
+
+#Filter SE Asia and China region
+sea_lon_min, sea_lon_max = 80, 135
+sea_lat_min, sea_lat_max = -10, 55
+mask_sea = (lon_stations >= sea_lon_min) & (lon_stations <= sea_lon_max) & (lat_stations >= sea_lat_min) & (lat_stations <= sea_lat_max)
+lon_stations_sea = lon_stations[mask_sea]
+lat_stations_sea = lat_stations[mask_sea]
+days_above_wb_sea = days_above_wb[mask_sea]
+
+#Load first 10 years and last 10 years data
+first10_data = pd.read_csv('/path/to/your/days/above/threshold/first10years/HI/CSV')
+last10_data = pd.read_csv('/path/to/your/days/above/threshold/last10years/HI/CSV')
+merged_data = pd.merge(first10_data, last10_data, on=['latitude', 'longitude'], suffixes=('_first10', '_last10'))
+merged_data['days_difference'] = merged_data['avg_days_per_year_last10'] - merged_data['avg_days_per_year_first10']
+
+#Identify stations that became chronic but not > 75 day jump
+condition = (
+    (merged_data['avg_days_per_year_first10'] < 90) & 
+    (merged_data['avg_days_per_year_last10'] >= 90) & 
+    (merged_data['days_difference'] <= 75)
+)
+lon_xs = merged_data.loc[condition, 'longitude'].values
+lat_xs = merged_data.loc[condition, 'latitude'].values
+
+#Filter X markers                                
+us_mask_xs = (
+    (lon_xs >= -128) & (lon_xs <= -60) &
+    (lat_xs >= 13) & (lat_xs <= 52)
+)
+lon_xs_us = lon_xs[us_mask_xs]
+lat_xs_us = lat_xs[us_mask_xs]
+
+se_mask_xs = (
+    (lon_xs >= 80) & (lon_xs <= 135) &
+    (lat_xs >= -10) & (lat_xs <= 55)
+)
+lon_xs_se = lon_xs[se_mask_xs]
+lat_xs_se = lat_xs[se_mask_xs]
+
+#Create yellow to red colormap
+station_cmap = LinearSegmentedColormap.from_list("yellow_orange_red", ["yellow", "orange", "red"])
+
+#Set up figure and GridSpec layout
+fig = plt.figure(figsize=(16, 12))
+gs = gridspec.GridSpec(2, 2, height_ratios=[1.5, 1])
+
+#Global Plot
+ax1 = fig.add_subplot(gs[0, :], projection=ccrs.PlateCarree())
+ax1.set_extent([-180, 180, -60, 70], crs=ccrs.PlateCarree())
+ax1.coastlines()
+ax1.add_feature(cfeature.BORDERS, linestyle=':')
+gl1 = ax1.gridlines(draw_labels=True, linewidth=0.5, color='gray', alpha=0.5)
+gl1.top_labels = False
+gl1.right_labels = False
+
+scatter1 = ax1.scatter(
+    lon_stations, lat_stations,
+    c=days_above_wb,
+    cmap=station_cmap,
+    norm=Normalize(vmin=days_above_wb.min(), vmax=days_above_wb.max()),
+    s=40,
+    linewidth=0.5,
+    alpha=1.0,
+    transform=ccrs.PlateCarree()
+)
+
+ax1.scatter(lon_xs, lat_xs,
+            color='blue',
+            marker='X',
+            s=40,
+            linewidth=0.5,
+            alpha=0.7,
+            transform=ccrs.PlateCarree(),
+            label='Stations Becoming Chronic (≥90 days) in 2013-2023')
+
+cbar1 = fig.colorbar(scatter1, ax=ax1, orientation='horizontal', pad=0.07, aspect=40, shrink=0.9)
+cbar1.set_label('Average Days > 90°F', fontsize=15, labelpad=12)
+cbar1.ax.tick_params(labelsize=12)
+ax1.legend(loc='upper right', fontsize=16)
+ax1.set_title('Average Number of Days per Year with Maximum Heat Index > 90°F (1993–2023)', fontsize=18, pad=12)
+
+#United States, Mexico, and the Caribbean Plot
+ax2 = fig.add_subplot(gs[1, 0], projection=ccrs.PlateCarree())
+ax2.set_extent([us_lon_min, us_lon_max, us_lat_min, us_lat_max], crs=ccrs.PlateCarree())
+ax2.coastlines()
+ax2.add_feature(cfeature.STATES, linewidth=1, edgecolor='black')
+ax2.add_feature(cfeature.BORDERS, linestyle=':')
+gl2 = ax2.gridlines(draw_labels=True, linewidth=0.5, color='gray', alpha=0.5)
+gl2.top_labels = False
+gl2.right_labels = False
+
+scatter2 = ax2.scatter(
+    lon_stations_us, lat_stations_us,
+    c=days_above_wb_us,
+    cmap=station_cmap,
+    norm=Normalize(vmin=days_above_wb_us.min(), vmax=days_above_wb_us.max()),
+    s=50,
+    linewidth=0.5,
+    alpha=1.0,
+    transform=ccrs.PlateCarree()
+)
+
+ax2.scatter(lon_xs_us, lat_xs_us,
+            color='blue',
+            marker='X',
+            s=50,
+            linewidth=0.5,
+            alpha=0.7,
+            transform=ccrs.PlateCarree(),
+            label='Stations Becoming Chronic (≥90 days) in 2013-2023')
+
+ax2.set_title('United States, Mexico, and the Caribbean', fontsize=18, pad=12)
+
+#China and SE Asia Plot
+ax3 = fig.add_subplot(gs[1, 1], projection=ccrs.PlateCarree())
+ax3.set_extent([sea_lon_min, sea_lon_max, sea_lat_min, sea_lat_max], crs=ccrs.PlateCarree())
+ax3.coastlines()
+ax3.add_feature(cfeature.BORDERS, linestyle=':')
+gl3 = ax3.gridlines(draw_labels=True, linewidth=0.5, color='gray', alpha=0.5)
+gl3.top_labels = False
+gl3.right_labels = False
+
+scatter3 = ax3.scatter(
+    lon_stations_sea, lat_stations_sea,
+    c=days_above_wb_sea,
+    cmap=station_cmap,
+    norm=Normalize(vmin=days_above_wb_sea.min(), vmax=days_above_wb_sea.max()),
+    s=50,
+    linewidth=0.5,
+    alpha=1.0,
+    transform=ccrs.PlateCarree()
+)
+
+ax3.scatter(lon_xs_se, lat_xs_se,
+            color='blue',
+            marker='X',
+            s=50,
+            linewidth=0.5,
+            alpha=0.7,
+            transform=ccrs.PlateCarree(),
+            label='Stations Becoming Chronic (≥90 days) in 2013-2023')
+
+ax3.set_title('China and Southeast Asia', fontsize=18, pad=12)
+
+#Layout and Save
+fig.text(0.07, 1.170, '(a)', fontsize=17, fontweight='bold')
+fig.text(0.07, 0.58, '(b)', fontsize=17, fontweight='bold')
+fig.text(0.52, 0.58, '(c)', fontsize=17, fontweight='bold')
+
+fig.subplots_adjust(left=0.08,   
+                    right=0.9,  
+                    top=1.2,    
+                    bottom=0.2, 
+                    wspace=0.05,
+                    hspace=0.05) 
+
+plt.savefig('/path/to/your/output/figure/file', dpi=300, bbox_inches='tight')
+plt.show()
